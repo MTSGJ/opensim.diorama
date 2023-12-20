@@ -1,0 +1,335 @@
+diff -Nur indra.orig/llrender/llimagegl.cpp indra/llrender/llimagegl.cpp
+--- indra.orig/llrender/llimagegl.cpp	2015-01-10 00:49:33.061299700 +0900
++++ indra/llrender/llimagegl.cpp	2015-01-10 10:53:11.098070100 +0900
+@@ -2170,3 +2170,69 @@
+ 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
+ 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL,  nummips);
+ */  
++
++
++// Fumi.Iseki
++BOOL LLImageGL::pasteSubImage(const U8* datap, S32 data_width, S32 data_height, S32 x_pos, S32 y_pos, S32 width, S32 height)
++{
++	if (width<=0 || height<=0) return FALSE;
++	if (mTexName==0) return FALSE;
++	if (datap==NULL) return FALSE;
++	
++	if (x_pos==0 && y_pos==0 && width==getWidth() && height==getHeight() && data_width==width && data_height==height)
++	{
++		setImage(datap, FALSE);
++	}
++	else
++	{
++		if (mUseMipMaps)
++		{
++			dump();
++			llerrs << "pasteSubImage called with mipmapped image (not supported)" << llendl;
++		}
++		llassert_always(mCurrentDiscardLevel == 0);
++		llassert_always(x_pos >= 0 && y_pos >= 0);
++		
++		
++		if (width > data_width)   width  = data_width;
++		if (height > data_height) height = data_height;
++		if ((x_pos+width)  > getWidth())  width  = getWidth()  - x_pos;
++		if ((y_pos+height) > getHeight()) height = getHeight() - y_pos;
++		if (width<=0 || height<=0) return FALSE;
++
++		glPixelStorei(GL_UNPACK_ROW_LENGTH, data_width);
++		stop_glerror();
++
++		if(mFormatSwapBytes)
++		{
++			glPixelStorei(GL_UNPACK_SWAP_BYTES, 1);
++			stop_glerror();
++		}
++
++		BOOL res = gGL.getTexUnit(0)->bindManual(mBindTarget, mTexName);
++		if (!res) llerrs << "LLImageGL::pasteSubImage(): bindTexture failed" << llendl;
++		stop_glerror();
++
++		glTexSubImage2D(mTarget, 0, x_pos, y_pos, width, height, mFormatPrimary, mFormatType, datap);
++		gGL.getTexUnit(0)->disable();
++		stop_glerror();
++
++		if(mFormatSwapBytes)
++		{
++			glPixelStorei(GL_UNPACK_SWAP_BYTES, 0);
++			stop_glerror();
++		}
++
++		glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
++		stop_glerror();
++		mGLTextureCreated = true;
++	}
++	return TRUE;
++}
++
++
++// Fumi.Iseki
++BOOL LLImageGL::pasteSubImage(const LLImageRaw* imageraw, S32 x_pos, S32 y_pos, S32 width, S32 height)
++{
++	return pasteSubImage(imageraw->getData(), imageraw->getWidth(), imageraw->getHeight(), x_pos, y_pos, width, height);
++}
+diff -Nur indra.orig/llrender/llimagegl.h indra/llrender/llimagegl.h
+--- indra.orig/llrender/llimagegl.h	2015-01-10 00:49:33.061299700 +0900
++++ indra/llrender/llimagegl.h	2015-01-10 10:54:35.095874500 +0900
+@@ -109,6 +109,10 @@
+ 	BOOL setSubImage(const U8* datap, S32 data_width, S32 data_height, S32 x_pos, S32 y_pos, S32 width, S32 height, BOOL force_fast_update = FALSE);
+ 	BOOL setSubImageFromFrameBuffer(S32 fb_x, S32 fb_y, S32 x_pos, S32 y_pos, S32 width, S32 height);
+ 
++	// Fumi.Iseki
++	BOOL pasteSubImage(const LLImageRaw* imageraw, S32 x_pos, S32 y_pos, S32 width, S32 height);
++	BOOL pasteSubImage(const U8* datap, S32 data_width, S32 data_height, S32 x_pos, S32 y_pos, S32 width, S32 height);
++
+ 	// Read back a raw image for this discard level, if it exists
+ 	BOOL readBackRaw(S32 discard_level, LLImageRaw* imageraw, bool compressed_ok); 
+ 	void destroyGLTexture();
+diff -Nur indra.orig/newview/lldrawpoolterrain.cpp indra/newview/lldrawpoolterrain.cpp
+--- indra.orig/newview/lldrawpoolterrain.cpp	2015-01-10 00:49:41.393714900 +0900
++++ indra/newview/lldrawpoolterrain.cpp	2015-01-10 10:56:59.809151600 +0900
+@@ -202,7 +202,30 @@
+ 	{
+ 		gPipeline.enableLightsDynamic();
+ 
+-		renderFullShader();
++		// Fumi.Iseki
++		S32 terrain_cont = 0;
++		S32 terrain_tile = 0;
++		if (compp->getStartHeight(1)==0.0 && compp->getHeightRange(1)==0.0) {
++			terrain_cont++;
++			terrain_tile = 0;
++		}
++		if (compp->getStartHeight(3)==0.0 && compp->getHeightRange(3)==0.0) {
++			terrain_cont++;
++			terrain_tile = 1;
++		}
++		if (compp->getStartHeight(0)==0.0 && compp->getHeightRange(0)==0.0) {
++			terrain_cont++;
++			terrain_tile = 2;
++		}
++		if (compp->getStartHeight(2)==0.0 && compp->getHeightRange(2)==0.0) {
++			terrain_cont++;
++			terrain_tile = 3;
++		}
++		if (terrain_cont>0) {
++			if (terrain_cont==4) renderTiledShader();
++			else renderTiledShader(terrain_tile);
++		}
++		else renderFullShader();
+ 	}
+ 	else
+ 	{
+@@ -983,3 +1006,42 @@
+ {
+ 	return LLColor3(0.f, 0.f, 1.f);
+ }
++
++
++// Fumi.Iseki
++void LLDrawPoolTerrain::renderTiledShader(S32 corner)
++{
++	LLViewerRegion *regionp = mDrawFace[0]->getDrawable()->getVObj()->getRegion();
++	LLVLComposition *compp = regionp->getComposition();
++	LLViewerTexture *detail_texture = compp->getTiledTexture(corner);
++	if (detail_texture==NULL) return;
++
++	LLVector4 tp0, tp1;
++	F32 mapScale = 1.0f/regionp->getWidth();
++	tp0.setVec(mapScale, 0.0f, 0.0f, 0.0f);
++	tp1.setVec(0.0f, mapScale, 0.0f, 0.0f);
++	
++	gGL.getTexUnit(1)->enable(LLTexUnit::TT_TEXTURE);
++	gGL.getTexUnit(1)->bind(detail_texture);
++	gGL.getTexUnit(1)->activate();
++	gGL.matrixMode(LLRender::MM_TEXTURE);
++	gGL.loadIdentity();
++	gGL.matrixMode(LLRender::MM_MODELVIEW);
++
++	LLGLSLShader* shader = LLGLSLShader::sCurBoundShaderPtr;
++	if (shader==NULL) return;
++		
++	shader->uniform4fv(LLShaderMgr::OBJECT_PLANE_S, 1, tp0.mV);
++	shader->uniform4fv(LLShaderMgr::OBJECT_PLANE_T, 1, tp1.mV);
++
++	drawLoop();
++
++	gGL.getTexUnit(1)->disable();
++	gGL.getTexUnit(1)->unbind(LLTexUnit::TT_TEXTURE);
++
++	gGL.getTexUnit(0)->enable(LLTexUnit::TT_TEXTURE);
++	gGL.getTexUnit(0)->activate();
++	gGL.matrixMode(LLRender::MM_TEXTURE);
++	gGL.loadIdentity();
++	gGL.matrixMode(LLRender::MM_MODELVIEW);
++}
+\ No newline at end of file
+diff -Nur indra.orig/newview/lldrawpoolterrain.h indra/newview/lldrawpoolterrain.h
+--- indra.orig/newview/lldrawpoolterrain.h	2015-01-10 00:49:41.393714900 +0900
++++ indra/newview/lldrawpoolterrain.h	2015-01-10 10:57:42.103570700 +0900
+@@ -89,6 +89,9 @@
+ 	void renderFull2TU();
+ 	void renderFull4TU();
+ 	void renderFullShader();
++	// Fumi.Iseki
++	void renderTiledShader(S32 corner=4);
++
+ 	void drawLoop();
+ };
+ 
+diff -Nur indra.orig/newview/llviewertexture.cpp indra/newview/llviewertexture.cpp
+--- indra.orig/newview/llviewertexture.cpp	2015-01-10 00:49:44.529320400 +0900
++++ indra/newview/llviewertexture.cpp	2015-01-10 10:58:39.340844500 +0900
+@@ -900,6 +900,14 @@
+ #endif
+ }
+ 
++
++// Fumi.Iseki
++BOOL LLViewerTexture::pasteSubImage(LLImageRaw* imageraw, S32 x_pos, S32 y_pos, S32 width, S32 height)
++{
++	return mGLTexturep->pasteSubImage(imageraw, x_pos, y_pos, width, height);
++}
++
++
+ //----------------------------------------------------------------------------------------------
+ //end of LLViewerTexture
+ //----------------------------------------------------------------------------------------------
+diff -Nur indra.orig/newview/llviewertexture.h indra/newview/llviewertexture.h
+--- indra.orig/newview/llviewertexture.h	2015-01-10 00:49:44.544920400 +0900
++++ indra/newview/llviewertexture.h	2015-01-10 10:59:28.752670700 +0900
+@@ -168,6 +168,10 @@
+ 	LLViewerMediaTexture* getParcelMedia() const { return mParcelMedia;}
+ 
+ 	/*virtual*/ void updateBindStatsForTester() ;
++
++	// Fumi.Iseki
++	BOOL  pasteSubImage(LLImageRaw* imageraw, S32 x_pos, S32 y_pos, S32 width, S32 height);
++
+ protected:
+ 	void cleanup() ;
+ 	void init(bool firstinit) ;	
+diff -Nur indra.orig/newview/llvlcomposition.cpp indra/newview/llvlcomposition.cpp
+--- indra.orig/newview/llvlcomposition.cpp	2015-01-10 00:49:44.576120500 +0900
++++ indra/newview/llvlcomposition.cpp	2015-01-10 11:02:17.728335500 +0900
+@@ -77,6 +77,12 @@
+ 	setDetailTextureID(2, TERRAIN_MOUNTAIN_DETAIL);
+ 	setDetailTextureID(3, TERRAIN_ROCK_DETAIL);
+ 
++	// Fumi.Iseki
++	tiledTexture = NULL;
++	for (S32 i=0; i<CORNER_COUNT; ++i) {
++		discardRawImages[i] = -1;
++	}
++
+ 	static const LLCachedControl<F32> terrain_color_start_height("TerrainColorStartHeight", 20.f); 
+ 	static const LLCachedControl<F32> terrain_color_height_range("TerrainColorHeightRange", 60.f); 
+ 
+@@ -112,6 +118,9 @@
+ 	mDetailTextures[corner] = LLViewerTextureManager::getFetchedTexture(id);
+ 	mDetailTextures[corner]->setNoDelete() ;
+ 	mRawImages[corner] = NULL;
++
++	// Fumi.Iseki
++	discardRawImages[corner] = -1;
+ }
+ 
+ BOOL LLVLComposition::generateHeights(const F32 x, const F32 y,
+@@ -503,3 +512,72 @@
+ {
+ 	mHeightRange[corner] = range;
+ }
++
++
++// Fumi.Iseki
++LLViewerFetchedTexture*  LLVLComposition::getTiledTexture(S32 corner, S32 discard)
++{
++	if (corner>=0 && corner<CORNER_COUNT) return mDetailTextures[corner];
++
++	//
++	const U32 TEXTURE_SIZE = 1024;
++
++	if (tiledTexture==NULL) {
++		LLImageRaw* imageraw = new LLImageRaw(TEXTURE_SIZE*2, TEXTURE_SIZE*2, 3);
++		tiledTexture= new LLViewerFetchedTexture(imageraw, false);
++	}
++	if (tiledTexture==NULL) return NULL;
++
++	//
++	for (S32 i=0; i<CORNER_COUNT; ++i) {
++		//
++		LLImageRaw* raw = NULL;
++
++		if (discardRawImages[i]!=discard && mDetailTextures[i].notNull() && mDetailTextures[i]->getComponents()>=3) {
++			//
++			mDetailTextures[i]->forceToSaveRawImage(discard);
++			if (mDetailTextures[i]->reloadRawImage(discard)!=NULL) {
++				//
++				S32 imagelevel = mDetailTextures[i]->getRawImageLevel();
++				if (imagelevel==discard || discardRawImages[i]!=imagelevel) {
++					discardRawImages[i] = imagelevel;
++					raw = mDetailTextures[i]->getRawImage();
++				}
++				mDetailTextures[i]->destroyRawImage();
++			}
++		}
++
++		//
++		if (raw!=NULL && raw->getWidth()>0 && raw->getHeight()>0 && raw->getComponents()>=3) {
++			//
++			LLImageRaw* newraw = NULL;
++			if (raw->getComponents()==4 || raw->getWidth()!=TEXTURE_SIZE || raw->getHeight()!=TEXTURE_SIZE) {
++				newraw = new LLImageRaw(TEXTURE_SIZE, TEXTURE_SIZE, 3);
++				if (raw->getComponents()==4) {
++					if (raw->getWidth()!=TEXTURE_SIZE || raw->getHeight()!=TEXTURE_SIZE) newraw->copyScaled4onto3(raw);
++					else  newraw->copyUnscaled4onto3(raw);
++				}
++				else newraw->copyScaled(raw);
++				raw = newraw;
++			}
++
++			if (raw->getWidth()==TEXTURE_SIZE && raw->getHeight()==TEXTURE_SIZE && raw->getComponents()==3) {
++				if (i==0) {
++					tiledTexture->pasteSubImage(raw, 0, TEXTURE_SIZE, TEXTURE_SIZE, TEXTURE_SIZE);
++				}
++				else if (i==1) {
++					tiledTexture->pasteSubImage(raw, TEXTURE_SIZE, TEXTURE_SIZE, TEXTURE_SIZE, TEXTURE_SIZE);
++				}
++				else if (i==2) {
++					tiledTexture->pasteSubImage(raw, 0, 0, TEXTURE_SIZE, TEXTURE_SIZE);
++				}
++				else {
++					tiledTexture->pasteSubImage(raw, TEXTURE_SIZE, 0, TEXTURE_SIZE, TEXTURE_SIZE);
++				}
++			}
++			if (newraw!=NULL) newraw->deleteData();
++		}
++	}
++
++	return tiledTexture;
++}
+diff -Nur indra.orig/newview/llvlcomposition.h indra/newview/llvlcomposition.h
+--- indra.orig/newview/llvlcomposition.h	2015-01-10 00:49:44.576120500 +0900
++++ indra/newview/llvlcomposition.h	2015-01-10 11:02:09.391858700 +0900
+@@ -74,6 +74,10 @@
+ 	friend class LLDrawPoolTerrain;
+ 	void setParamsReady()		{ mParamsReady = TRUE; }
+ 	BOOL getParamsReady() const	{ return mParamsReady; }
++
++	// Fumi.Iseki
++	LLViewerFetchedTexture* getTiledTexture(S32 corner=CORNER_COUNT, S32 discard=0);
++
+ protected:
+ 	BOOL mParamsReady;
+ 	LLSurface *mSurfacep;
+@@ -82,6 +86,10 @@
+ 	LLPointer<LLViewerFetchedTexture> mDetailTextures[CORNER_COUNT];
+ 	LLPointer<LLImageRaw> mRawImages[CORNER_COUNT];
+ 
++	// Fumi.Iseki
++	LLViewerFetchedTexture* tiledTexture;
++	S32 discardRawImages[CORNER_COUNT];
++
+ 	F32 mStartHeight[CORNER_COUNT];
+ 	F32 mHeightRange[CORNER_COUNT];
+ 

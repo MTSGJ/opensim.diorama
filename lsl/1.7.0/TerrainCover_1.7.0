@@ -1,0 +1,559 @@
+//////////////////////////////////////////////////////////////////////////////////////////
+//
+//  Terrain Map Texture Cover for 50m Mesh Data v1.7
+//                                                      by Fumi.Iseki
+//
+//  Command
+//      /5010 covering [map_code] [cord_type] [map_site] [zoom] [map_type] [map_xyrate] [cover_factor] [mesh_size] [wait_fac]
+//      /5010 texture  [map_code] [cord_type] [map_site] [zoom] [map_type] [map_xyrate] [wait_fac]
+//
+//      /5010 transp
+//      /5010 reset
+//
+
+string  VERSION = "1.7";
+integer DEFAULT_CHANNEL  = 5010;
+
+string  default_map_site = "google";
+string  default_map_type = "satellite";
+string  default_tex_zoom = "2";             // 1 or 2
+string  default_cover_fac = "0.50";
+string  default_map_xyrate = "1.0";
+string  default_mesh_size = "64";
+string  default_wait_fac = "15.0";
+string  default_cord_type = "srtm3";
+
+string  google_map_url = "http://maps.google.com/staticmap";
+string  yahoo_map_url  = "http://img.map.yahoo.co.jp/ymap/mk_map";
+
+string  notecard_name = "TerrainCover.conf";
+key     notecard_key  = NULL_KEY;
+integer notecard_line = 0; 
+integer listen_hdl = 0;
+integer cmd_channel = 0;
+
+
+//
+string  map_site = ""; 
+string  map_code = "";
+string  cover_fac = "";
+string  map_xyrt = "";
+string  tex_zoom = "";
+string  map_type = "";
+string  mesh_size = "";
+string  map_api_key = "";
+string  wait_fac = "";
+string  cord_type = "";
+
+
+//////////////////////////////////////////////////////////////////////////////////////////
+//
+
+cover_init()
+{
+    cmd_channel  = DEFAULT_CHANNEL;
+
+    if (listen_hdl>0) llListenRemove(listen_hdl);
+    listen_hdl = llListen(cmd_channel, "", NULL_KEY, "");
+    if (listen_hdl<=0) llShout(0, "Listen Channel Open Error = "+(string)listen_hdl);
+
+    notecard_line = 0;
+    if (llGetInventoryType(notecard_name)==INVENTORY_NOTECARD) {
+        notecard_key = llGetNotecardLine(notecard_name, 0); 
+    }
+    llSetAlpha(1.0, ALL_SIDES);
+}
+
+
+
+// ノートカードの読み込み
+integer parse_conf_file(string str) 
+{
+    list   items = llParseString2List(str,["=", ",", " ", "\n"], []);
+    string name  = llList2String(items,0);
+    string value = llList2String(items,1);
+
+    if (name == "cmd_channel") {
+        integer old_channel = cmd_channel;
+        cmd_channel = (integer)value;
+        //llSay(0, "Listen Channel is " + value);
+        if (old_channel!=cmd_channel) return TRUE;
+    } 
+    else if (name=="google_map_url") {
+        google_map_url = value;
+        //llSay(0, "Google Map URL is " + value);
+    }
+    else if (name=="yahoo_map_url") {
+        yahoo_map_url = value;
+        //llSay(0, "Yahoo Map URL is " + value);
+    }
+    else if (name=="map_api_key") {
+        map_api_key = value;
+        //llSay(0, "Map API Key is " + value);
+    }
+    else if (name=="default_map_site") {
+        default_map_site = value;
+        //llSay(0, "Default Map Site is " + value);
+    }
+    else if (name=="default_texture_zoom") {
+        default_tex_zoom = value;
+        //llSay(0, "Default Texture Zoom is " + value);
+    }
+    else if (name=="default_map_type") {
+        default_map_type = value;
+        //llSay(0, "Default Map Type is " + value);
+    }
+    else if (name=="default_cord_type") {
+        default_cord_type = value;
+        //llSay(0, "Default Coordinate Type is " + value);
+    }
+    else if (name=="default_cover_fac") {
+        default_cover_fac = value;
+        //llSay(0, "Default Cover Factor is " + value);
+    }
+    else if (name=="default_map_xyrate") {
+        default_map_xyrate = value;
+        //llSay(0, "Default Map XY Rate is " + value);
+    }
+    else if (name=="default_mesh_size") {
+        default_mesh_size = value;
+        //llSay(0, "Default Mesh Size is " + value);
+    }
+    else if (name=="default_wait_fac") {
+        default_wait_fac = value;
+        //llSay(0, "Default Wait Fac is " + value);
+    }
+    return FALSE;
+}
+
+
+
+//////////////////////////////////////////////////////////////////////////////////////////
+//
+
+//
+//
+//
+set_map_sculpt(string data, integer size)
+{
+    //llSay(0, "Setting Scuplted Prim.");    
+    string param = "width:" + (string)size + ", height:" + (string)size;
+    osSetDynamicTextureData("", "bitmapstring" , data, param, 3600);
+
+    list txtr = llGetPrimitiveParams([PRIM_TEXTURE, 0]);
+    string uuid = llList2String(txtr, 0);
+
+    //string uuid = llGetTexture(0);
+
+    llSetPrimitiveParams([PRIM_TYPE, PRIM_TYPE_SCULPT, (string)uuid, PRIM_SCULPT_TYPE_PLANE]);
+}
+
+
+
+
+vector  world2japanese(vector deg)
+{
+    vector jpn;
+    jpn.y = deg.y + 0.00010695 *deg.y - 0.000017464*deg.x - 0.0046017;
+    jpn.x = deg.x + 0.000046038*deg.y + 0.000083043*deg.x - 0.010040;
+    return jpn;
+}
+
+
+
+
+vector  japanese2world(vector deg)
+{
+    vector wld;
+    wld.y = deg.y - 0.00010695 *deg.y + 0.000017464*deg.x + 0.0046017;
+    wld.x = deg.x - 0.000046038*deg.y - 0.000083043*deg.x + 0.010040;
+    return wld;    
+}
+
+
+
+
+// Google Static Map URL
+string google_map_texture(vector deg, string ctype, string zoom, string mtype, string apikey)
+{
+    vector wld;
+    if (ctype=="50m") wld = japanese2world(deg);
+    else wld = deg;
+    
+    string size;
+    if (ctype=="50m") {
+        if (zoom=="2") {
+            zoom = "15";
+            size = "466";
+        }
+        else {
+            zoom = "14";
+            size = "233";
+        }
+    }
+    else {
+        if (zoom=="2") {
+            zoom = "15";
+            size = "620";
+        }
+        else {
+            zoom = "14";
+            size = "312";
+        }
+    }
+    
+    string cnt = "?center=" + (string)wld.y + "," + (string)wld.x;
+    string zm  = "&zoom=" + (string)zoom;
+    string sz  = "&size=" + (string)size + "x" + (string)size;
+    string typ = "";
+    string mky = "";
+    
+    if (mtype!="") {
+        if (mtype=="photo" || mtype=="aero") mtype = "satellite";
+        typ = "&maptype=" + mtype;
+    }
+    if (apikey!="") mky = "&key=" + apikey;
+    
+    string call_url = google_map_url + cnt + zm + sz + typ + mky;
+    
+    //llSay(0, "Loading Google Map Tecture Image = " + call_url);
+    return call_url;
+}
+
+
+
+// Yahoo Map URL
+string yahoo_map_texture(vector deg, string ctype, string zoom, string mtype, string apikey)
+{
+    vector jpn;
+    if (ctype=="50m") jpn = deg;
+    else jpn = world2japanese(deg);
+        
+    string size;
+    if (ctype=="50m") {
+        if (zoom=="2") {
+            zoom = "3";
+            size = "728";
+        }
+        else {
+            zoom = "4";
+            size = "260";
+        }
+    }
+    else {  // srtm3
+        zoom = "4";
+        size = "345";
+    } 
+
+    string cnt = "?lat=" + (string)jpn.y + "&lon=" + (string)jpn.x;
+    string zm  = "&sc=" + (string)zoom;
+    string sz  = "&width=" + (string)size + "&height=" + (string)size;
+    string typ = "";
+    string mky = "";
+    string otr = "&pointer=off&scalebar=off";
+    
+    if (mtype!="") {
+        if (mtype=="photo" || mtype=="satellite") mtype = "aero";
+        typ = "&mode=" + mtype;
+    }
+    
+    string call_url = yahoo_map_url + cnt + zm + sz + typ + mky + otr;
+    
+    //llSay(0, "Loading Yahoo Map Tecture Image = " + call_url);
+    return call_url;
+}
+
+
+
+
+// Landsat Map URL
+string landsat_map_texture(vector deg, string ctype, string zoom, string mtype, string apikey)
+{
+
+    
+    return "";
+}
+
+
+
+
+
+
+covering_terrain(string code, string ctype, string site, string zoom, string mtype, string xyrate, string apikey, string cvrfac, string msize)
+{
+    float   cfac = (float)cvrfac;
+    integer mhsz = (integer)msize;
+
+    if (cfac<=0.0) cfac = (float)default_cover_fac;
+    if (mhsz<=0)   mhsz = (integer)default_mesh_size;
+
+    float  mag = moveto_ground(cfac);
+    vector psz = llList2Vector(llGetPrimitiveParams([PRIM_SIZE]), 0);
+    vector pos = llGetPos();
+    
+    string data = osTerrainGetSculpt(pos.x, pos.y, mag-cfac, psz.x, mhsz);       
+    set_map_sculpt(data, mhsz);
+    data = "";
+
+    texture_terrain(code, ctype, site, zoom, mtype, xyrate, apikey);
+}
+
+
+
+
+
+texture_terrain(string code, string ctype, string site, string zoom, string mtype, string xyrate, string apikey)
+{
+    if (code!="" && code!="0") {
+        float rate = (float)xyrate;
+        if (rate<=0.0) rate  = (float)default_map_xyrate;
+        if (site=="")  site  = default_map_site;
+        if (ctype=="") ctype = default_cord_type;
+        if (mtype=="") mtype = default_map_type;
+
+        vector deg = get_coordinate(code, ctype, rate);
+        
+        if (deg.z>0.0) {
+            string url = "";
+            if (site=="google")       url = google_map_texture (deg, ctype, zoom, mtype, apikey);
+            else if (site=="yahoo")   url = yahoo_map_texture  (deg, ctype, zoom, mtype, apikey);
+            else if (site=="landsat") url = landsat_map_texture(deg, ctype, zoom, mtype, apikey);
+        
+            //llSay(0, "URL = "+url);
+            if (url!="") {
+                llSetAlpha(1.0, ALL_SIDES);
+                osSetDynamicTextureURL("", "image" , url, "", 3600);
+            }
+        }
+    }
+    
+    llRotateTexture(-PI/2., ALL_SIDES);
+}
+
+
+
+
+vector  get_coordinate(string code, string ctype, float rate)
+{
+    vector deg;
+    vector pos = llGetPos();
+    integer indx = llSubStringIndex(code, "x");
+
+    deg.z = -1.0;
+    if (indx>0) {
+        float  at = (float)llGetSubString(code, 0, indx-1);
+        float  lt = (float)llGetSubString(code, indx+1, -1);
+
+        if (ctype=="srtm3") {
+            deg.y = at - (256.-pos.y)*rate/1200.;
+            deg.x = lt + pos.x/1200.;
+            deg.z = 1.0;
+        }
+        else if (ctype=="50m") {            
+            deg.y = at - (256.-pos.y)*rate/2400.;
+            deg.x = lt + pos.x/1600.;
+            deg.z = 1.0;
+        } 
+    }
+    else {      // マップコード
+        integer la = (integer)llGetSubString(code, 0, 1);
+        integer ln = (integer)llGetSubString(code, 2, 3);
+        integer hh = (integer)llGetSubString(code, 4, 4);
+        integer ww = (integer)llGetSubString(code, 5, 5);
+        
+        if (ctype=="srtm3") {
+            deg.y = la/1.5 + 200.*(hh+1)/2400 - (256.-pos.y)*rate/1200.;
+            deg.x = ln + 100. + (ww*200.)/1600. + pos.x/1200.;
+            deg.z = 1.0;
+        }
+        else if (ctype=="50m") {
+            deg.y = la/1.5 + (200.*(hh+1) - (256.-pos.y)*rate)/2400.;
+            deg.x = ln + 100. + (ww*200. + pos.x)/1600.;
+            deg.z = 1.0;
+        }
+    }
+    
+    return deg;
+}
+
+
+
+transp_terrain()
+{
+    llSetAlpha(0.0, ALL_SIDES);
+}
+
+
+
+//
+//  Move to Z = Ground + cfac 
+//
+float moveto_ground(float cfac)
+{
+    integer i = 0;
+    integer max = 20;
+    float ground = llGround(ZERO_VECTOR) + cfac;
+
+    vector pos = llGetPos();
+    do {
+        llSetPos(<pos.x, pos.y, ground>);
+        pos = llGetPos();
+        //llSay(0, "Move to "+(string)ground+"  "+(string)pos.z);
+        if (++i>max) break;
+    } while ((integer)(pos.z*10)!=(integer)(ground*10));
+
+    return pos.z;
+}
+
+
+
+random_wait(key id, float fac)
+{
+    if (fac<=0.0) return;
+    
+    vector psz   = llList2Vector(llGetPrimitiveParams([PRIM_SIZE]), 0);
+    vector obpos = llList2Vector(llGetObjectDetails(id, [OBJECT_POS]), 0);
+    vector mypos = llGetPos();
+    float  dist  = llVecMag(obpos - mypos);
+        
+    float  slpfac = dist/psz.x;
+    //integer stime = (integer)(slpfac + llFrand(slpfac*2.0));
+    integer stime = (integer)((slpfac-1.0)*2.0 + llFrand(slpfac*fac) + 0.5);
+    if (stime<0) stime = -stime;
+    llSleep(stime);
+}
+
+
+
+
+////////////////////////////////////////////////////////////////////
+//
+//
+default
+{
+    // ノートカードが一行読まれる度に発生するイベント
+    dataserver(key requested_key, string data)
+    {
+        if (requested_key==notecard_key ){
+            notecard_key = NULL_KEY;
+            if (data!=EOF){
+                if (parse_conf_file(data)) {  
+                    // チャンネル番号の再設定．
+                    if (listen_hdl>0) llListenRemove(listen_hdl);
+                    listen_hdl = llListen(cmd_channel, "", NULL_KEY, "");
+                }
+                notecard_line++;
+                notecard_key = llGetNotecardLine(notecard_name, notecard_line);
+            }
+        }
+     }
+
+
+    listen(integer ch, string name, key id, string msg) 
+    {
+        //if (listen_hdl>0) llListenRemove(listen_hdl);
+        //llSay(0, "Recived: " + msg);
+                
+        list items = llParseString2List(msg, ["=", ",", " ","\n"], []);
+        string cmd = llList2String(items, 0);
+
+        // cover [map_code] [map_site] [zoom] [type] [cover_factor] [map_xyrate] [mesh_size] [wait_fac]
+        if (cmd=="covering") {
+            map_code  = llList2String(items, 1);
+            cord_type = llList2String(items, 2);
+            map_site  = llList2String(items, 3);
+            tex_zoom  = llList2String(items, 4);
+            map_type  = llList2String(items, 5);
+            map_xyrt  = llList2String(items, 6);
+            cover_fac = llList2String(items, 7);
+            mesh_size = llList2String(items, 8);
+            wait_fac  = llList2String(items, 9);
+            
+            if (cord_type=="") cord_type = default_cord_type;
+            if (map_site=="")  map_site  = default_map_site;
+            if (tex_zoom=="")  tex_zoom  = default_tex_zoom;
+            if (map_type=="")  map_type  = default_map_type;
+            if (map_xyrt=="")  map_xyrt  = default_map_xyrate;
+            if (cover_fac=="") cover_fac = default_cover_fac;
+            if (mesh_size=="") mesh_size = default_mesh_size;
+            if (wait_fac=="")  wait_fac  = default_wait_fac;
+        
+            float wfac = (float)wait_fac;
+            if (wfac>0.0) random_wait(id, wfac);
+            //llSetAlpha(1.0, ALL_SIDES);
+            covering_terrain(map_code, cord_type, map_site, tex_zoom, map_type, map_xyrt, map_api_key, cover_fac, mesh_size);
+        }
+
+        // cover [map_code] [map_site] [zoom] [type] [map_xyrate] [wait_fac]
+        else if (cmd=="texture") {
+            map_code  = llList2String(items, 1);
+            cord_type = llList2String(items, 2);
+            map_site  = llList2String(items, 3);
+            tex_zoom  = llList2String(items, 4);
+            map_type  = llList2String(items, 5);
+            map_xyrt  = llList2String(items, 6);
+            wait_fac  = llList2String(items, 7);
+            
+            if (cord_type=="") cord_type = default_cord_type;
+            if (map_site=="")  map_site  = default_map_site;
+            if (tex_zoom=="")  tex_zoom  = default_tex_zoom;
+            if (map_type=="")  map_type  = default_map_type;
+            if (map_xyrt=="")  map_xyrt  = default_map_xyrate;
+            if (wait_fac=="")  wait_fac  = default_wait_fac;
+        
+            float wfac = (float)wait_fac;
+            if (wfac>0.0) random_wait(id, wfac);
+            //llSetAlpha(1.0, ALL_SIDES);
+            texture_terrain(map_code, cord_type, map_site, tex_zoom, map_type, map_xyrt, map_api_key);
+        }
+        
+        else if (cmd=="transp") {
+            transp_terrain();
+            llSay(0, "Became Transparent.");
+        }
+
+        else if (cmd=="reset") {
+            cover_init();
+            llSay(0, "Reseted.");
+        }
+        
+        else {
+            llSay(0, "Unknown Command: " + cmd);
+        }
+        
+        //if (listen_hdl>0) llListenRemove(listen_hdl);
+        //listen_hdl = llListen(cmd_channel, "", NULL_KEY, "");
+    }
+
+
+    state_entry()
+    {
+        llSay(0, "Start Script.");
+        cover_init();
+    }
+
+
+    on_rez(integer start_param) 
+    {
+        //if (listen_hdl>0) llListenRemove(listen_hdl);
+        llResetScript();
+    }
+
+
+    touch_start(integer total_number)
+    {
+        key user  = llDetectedKey(0);
+        key owner = llGetOwner();
+        if (user!=owner) return;
+        
+        //llSay(0, "Tuched.");
+        //llSetAlpha(1.0, ALL_SIDES);
+        covering_terrain(map_code, cord_type, map_site, tex_zoom, map_type, map_xyrt, map_api_key, cover_fac, mesh_size);
+
+        //if (listen_hdl>0) llListenRemove(listen_hdl);
+        //cover_init();
+        //llResetScript();
+    }
+
+}
+

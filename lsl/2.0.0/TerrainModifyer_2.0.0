@@ -1,0 +1,414 @@
+//////////////////////////////////////////////////////////////////////////////////////////
+//
+//  Terrain Modifyer for 50m/5m Mesh Map v2.0.0
+//                                                by Fumi.Iseki
+//
+//  Command
+//
+//      /5050 mapping map_code [map_type] [tex_type] [map_rate] [magnification] [sea_level] 
+//
+//      /5050 terrain map_code [map_type] [map_rate] [magnification] [sea_level]     // height only
+//      /5050 texture map_code [map_type] [tex_type] [map_rate]                      // texture only
+//
+//      /5050 fill meter
+//      /5050 reset
+//
+// ex) /5050 mapping 35.360496x138.727284 srtm1
+// ex) /5050 texture 533805 srtm3
+
+
+string  VERSION = "2.0.0";
+integer DEFAULT_CHANNEL = 5050;
+integer exec_texture = TRUE;
+integer multi_map = FALSE;
+
+// Default
+string  default_map_type   = "srtm3";
+string  default_map_rate   = "1.0";
+string  default_map_mgnf   = "1.0";
+string  default_map_sealvl = "20";
+
+string  default_tex_site   = "google";
+string  default_tex_type   = "photo";
+
+//
+string  notecard_name = "TerrainMod.conf";
+key     notecard_key  = NULL_KEY;
+integer notecard_line = 0;
+integer cmd_channel   = 0;
+integer listen_hdl    = 0;
+key     http_id       = NULL_KEY;
+
+//
+// Static Variable
+string map_data_url = "";
+string map_code   = "";
+string map_type   = "";
+string map_rate   = "";
+string map_mgnf   = "";
+string map_sealvl = "";
+
+string tex_site   = "";
+string tex_type   = "";
+
+
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Common
+
+// ノートカードを読む
+read_notecard()
+{
+    notecard_line = 0;
+    if (llGetInventoryType(notecard_name)==INVENTORY_NOTECARD) {
+        notecard_key = llGetNotecardLine(notecard_name, 0); 
+    }
+}
+
+
+// ノートカード処理
+integer parse_conf_file(string str) 
+{
+    list   items = llParseString2List(str,["=", ",", " ", "\n"], []);
+    string name  = llList2String(items,0);
+    string value = llList2String(items,1);
+
+    if (name == "cmd_channel") {
+        cmd_channel = (integer)value;
+        llSay(0, "Listen Channel is " + value);
+        return TRUE;
+    } 
+    else if (name == "map_data_url") {
+        map_data_url = value;
+        llSay(0, "Data Base URL is " + value);
+    }    
+    else if (name == "multi_map") {
+        if (value=="TRUE") multi_map = TRUE;
+        else multi_map = FALSE;
+        if (multi_map) llSay(0, "Multi Map is TRUE");
+        else llSay(0, "Multi Map is FALSE");
+    }    
+    //
+    else if (name == "default_map_type") {
+        default_map_type = value;
+        llSay(0, "Default Map Type is " + value);
+    }
+    else if (name=="default_map_rate") {
+        default_map_rate = value;
+        llSay(0, "Default Map Rate is " + value);
+    }
+    else if (name == "default_map_mgnf") {
+        default_map_mgnf = value;
+        llSay(0, "Default Map Magnification is " + value);
+    }
+    else if (name == "default_map_sealvl") {
+        default_map_sealvl = value;
+        llSay(0, "Default Map Sea Level is " + value);
+    }
+    //
+    else if (name == "default_tex_site") {
+        default_tex_site = value;
+        llSay(0, "Default Texture Site is " + value);
+    }
+    else if (name == "default_tex_type") {
+        default_tex_type = value;
+        llSay(0, "Default Texture Type is " + value);
+    }
+
+    return FALSE;
+}
+
+
+// コントローラを地表に移動させる
+moveto_ground()
+{
+    float gotolv;
+    
+    vector pos = llGetPos();    
+    float ground = llGround(ZERO_VECTOR);
+    float wtrlvl = llWater (ZERO_VECTOR);
+    
+    if (ground>wtrlvl) gotolv = ground;
+    else gotolv = wtrlvl;
+    gotolv += 2.0;
+
+    while((integer)pos.z!=(integer)gotolv) {
+        llSetPos(<pos.x, pos.y, gotolv>);
+        pos = llGetPos();
+    }
+    //llSay(0, "Moved to Ground " + (string)pos);
+}
+
+
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Height
+
+// 初期化
+terrain_init()
+{
+    cmd_channel  = DEFAULT_CHANNEL;
+    exec_texture = TRUE;
+ 
+    if (listen_hdl!=0) llListenRemove(listen_hdl);
+    listen_hdl = llListen(cmd_channel, "", NULL_KEY, "");
+
+    read_notecard();
+    moveto_ground();
+    //llSay(0, "Resetted");
+}
+
+
+// 標高データをダウンロード
+terrain_request_data(string code, string type, string rate, string sealvl)
+{
+    string request = map_data_url+"/get_height.php?code="+code+"&type="+type+"&rate="+rate+"&sea="+sealvl;
+    llSay(0, "Request Height URL = "+request);
+    http_id = llHTTPRequest(request, [], "");    
+}
+
+
+// 地形を生成
+terrain_height(string data, float mgnf)
+{
+    if (data=="") {
+        llSay(0, "ERROR: no data.");
+    }
+    else if (llGetSubString(data,0,5)=="ERROR:" || data=="Internal Server Error") {
+        llSay(0, data);
+    }
+    else {
+        llSay(0, "Start Map Processing.");
+        osTerrainSetByString(data, mgnf);
+        llSay(0, "Update Terrain.");
+        osTerrainFlush();
+        llSay(0, "Done Modify Terrain.");
+    }
+}
+
+
+// 平坦な標高を設定
+terrain_fill(float meter)
+{
+    llSay(0, "Start Map Processing.");
+    osTerrainFill(meter);
+    llSay(0, "Update Terrain.");
+    osTerrainFlush();
+    llSay(0, "Done Modify Terrain.");
+    moveto_ground();
+}
+
+
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Texture
+
+texture_terrain(string code, string type, string site, string text, string rate)
+{
+    if (code!="" && code!="0") {
+        if (type=="") type = default_map_type;
+        if (site=="") site = default_tex_site;
+        if (text=="") text = default_tex_type;
+        
+        string base_url = map_data_url+"/get_texture.php?code="+code+"&type="+type+"&site="+site+"&tex="+text+"&rate="+rate;
+        string url;
+
+        if (multi_map) {        
+            url = base_url+"&ch=0";
+            llSay(0, "Request Texture URL = "+url);
+            osSetTerrainTextureURL(0, url);
+
+            url = base_url+"&ch=1";
+            llSay(0, "Request Texture URL = "+url);
+            osSetTerrainTextureURL(1, url);
+
+            url = base_url+"&ch=2";
+            llSay(0, "Request Texture URL = "+url);
+            osSetTerrainTextureURL(2, url);
+
+            url = base_url+"&ch=3";
+            llSay(0, "Request Texture URL = "+url);
+            osSetTerrainTextureURL(3, url);
+        }
+        else {
+            url = base_url;
+            llSay(0, "Request Texture URL = "+url);
+            osSetTerrainTextureURL(0, url);
+        }
+    }
+}
+
+
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////
+//
+// Default State
+// 
+
+default
+{
+    // ノートカードが一行読まれる度に発生するイベント
+    dataserver(key requested_key, string data)
+    {
+        if (requested_key == notecard_key ){
+            notecard_key = NULL_KEY;
+            if (data != EOF){
+                if (parse_conf_file(data)) {  
+                    // チャンネル番号の再設定．
+                    if (listen_hdl!=0) llListenRemove(listen_hdl);
+                    listen_hdl = llListen(cmd_channel, "", NULL_KEY, "");
+                }
+                notecard_line++;
+                notecard_key = llGetNotecardLine(notecard_name, notecard_line);
+            }
+        }
+     }
+
+
+    listen(integer ch, string name, key id, string msg) 
+    {
+        if (listen_hdl!=0) llListenRemove(listen_hdl);
+        //llSay(0, "Recived: " + msg);
+
+        list items = llParseString2List(msg, ["=", ",", " ","\n"], []);
+        string cmd = llList2String(items, 0);
+        
+        // mapping map_code [map_type] [tex_type] [map_rate] [magnification] [sea_level] 
+        if (cmd=="mapping") {
+            map_code = llList2String(items, 1);
+            if (map_code!="") {                
+                map_type   = llList2String(items, 2);
+                tex_type   = llList2String(items, 3);
+                map_rate   = llList2String(items, 4);
+                map_mgnf   = llList2String(items, 5);
+                map_sealvl = llList2String(items, 6);
+
+                if (map_type=="")   map_type   = default_map_type;
+                if (tex_type=="")   tex_type   = default_tex_type;
+                if (map_rate=="")   map_rate   = default_map_rate;
+                if (map_mgnf=="")   map_mgnf   = default_map_mgnf;
+                if (map_sealvl=="") map_sealvl = default_map_sealvl;
+                
+                llShout(0, "Ready? Wait 3s.");
+                llSleep(3);
+                llShout(0, "Go!!");
+            
+                exec_texture = TRUE;  
+                terrain_request_data(map_code, map_type, map_rate, map_sealvl);
+            }
+        }
+
+        // terrain map_code [map_type] [map_rate] [magnification] [sea_level]     // height only
+        else if (cmd=="terrain") {
+            map_code = llList2String(items, 1);
+            if (map_code!="") {                
+                map_type   = llList2String(items, 2);
+                map_rate   = llList2String(items, 3);
+                map_mgnf   = llList2String(items, 4);
+                map_sealvl = llList2String(items, 5);
+ 
+                if (map_type=="")   map_type   = default_map_type;
+                if (map_rate=="")   map_rate   = default_map_rate;
+                if (map_mgnf=="")   map_mgnf   = default_map_mgnf;
+                if (map_sealvl=="") map_sealvl = default_map_sealvl;
+
+                llShout(0, "Ready? Wait 3s.");
+                llSleep(3);
+                llShout(0, "Go!!");
+                       
+                exec_texture = FALSE;         
+                terrain_request_data(map_code, map_type, map_rate, map_sealvl);
+            }
+        }
+        
+        // texture map_code [map_type] [tex_type] [map_rate]                      // texture only
+        else if (cmd=="texture") {
+            map_code = llList2String(items, 1);
+            if (map_code!="") {                
+                map_type   = llList2String(items, 2);
+                tex_type   = llList2String(items, 3);
+                map_rate   = llList2String(items, 4);
+               
+                if (map_type=="") map_type = default_map_type;
+                if (tex_type=="") tex_type = default_tex_type;
+                if (map_rate=="") map_rate = default_map_rate;
+                
+                texture_terrain(map_code, map_type, tex_site, tex_type, map_rate);
+            }
+            else {
+                llSay(0, "Map Code is missed.");
+            }
+        }
+        
+        else if (cmd=="fill") {
+            llSetTimerEvent(0.0);
+            string arg = llList2String(items, 1);
+            //llSay(0, cmd);
+            if (arg!="" && arg!=" ") {
+                float meter = llList2Float(items, 1);
+                terrain_fill(meter);
+            }
+        }
+                
+        else if (cmd=="reset") {
+            terrain_init();
+        }
+
+        else {
+            llSay(0, "Unknown Command: " + cmd);
+        }
+        
+        if (listen_hdl!=0) llListenRemove(listen_hdl);
+        listen_hdl = llListen(cmd_channel, "", NULL_KEY, "");
+    }
+
+
+    // 
+    http_response(key id, integer status, list data, string body)
+    {
+        if (id==http_id) {
+            // 地形の変形
+            terrain_height(body, map_mgnf);
+
+            // テクスチャの貼り付け
+            if (exec_texture) {
+                texture_terrain(map_code, map_type, tex_site, tex_type, map_rate);
+            }
+
+            moveto_ground();
+            llSleep(3);
+            moveto_ground();
+        }
+    }
+
+
+    changed(integer change)
+    {
+        if (change & CHANGED_INVENTORY)         
+        {
+            read_notecard();
+        }
+        if (change & CHANGED_REGION_START) {
+            llResetScript();
+        }       
+    }
+
+
+    state_entry()
+    {
+        terrain_init();
+        llSetText("Terrain Modifyer " + VERSION, <1.0, 1.0, 1.0>, 1);
+    }
+
+
+    on_rez(integer start_param) 
+    {
+        llResetScript();
+    }
+
+
+    touch_start(integer total_number)
+    {
+    }
+}
+

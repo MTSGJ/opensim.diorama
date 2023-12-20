@@ -1,0 +1,213 @@
+diff -Nur OpenSim.orig/Region/CoreModules/Scripting/DynamicTexture/DynamicTextureModule.cs OpenSim/Region/CoreModules/Scripting/DynamicTexture/DynamicTextureModule.cs
+--- OpenSim.orig/Region/CoreModules/Scripting/DynamicTexture/DynamicTextureModule.cs	2014-07-20 15:44:29.000000000 +0900
++++ OpenSim/Region/CoreModules/Scripting/DynamicTexture/DynamicTextureModule.cs	2014-07-20 15:44:29.000000000 +0900
+@@ -46,6 +46,8 @@
+     {
+ //        private static readonly ILog m_log = LogManager.GetLogger(MethodBase.GetCurrentMethod().DeclaringType);
+ 
++        private UUID newTextureID = UUID.Zero;
++
+         private const int ALL_SIDES = -1;
+ 
+         public const int DISP_EXPIRE = 1;
+@@ -125,7 +127,7 @@
+                 if (RegisteredScenes.ContainsKey(updater.SimUUID))
+                 {
+                     Scene scene = RegisteredScenes[updater.SimUUID];
+-                    UUID newTextureID = updater.DataReceived(texture.Data, scene);
++                    newTextureID = updater.DataReceived(texture.Data, scene);
+ 
+                     if (ReuseTextures
+                         && !updater.BlendWithOldTexture
+@@ -198,7 +200,7 @@
+                 updater.Url = url;
+                 updater.UpdateTimer = updateTimer;
+                 updater.UpdaterID = UUID.Random();
+-                updater.Params = extraParams;
++                updater.Params = extraParams.Trim().ToLower();
+                 updater.BlendWithOldTexture = SetBlending;
+                 updater.FrontAlpha = AlphaValue;
+                 updater.Face = face;
+@@ -212,8 +214,15 @@
+                     }
+                 }
+ 
++                newTextureID = UUID.Zero;
+                 RenderPlugins[contentType].AsyncConvertUrl(updater.UpdaterID, url, extraParams);
+-                return updater.UpdaterID;
++
++                int lcount = 0;
++                while (newTextureID==UUID.Zero && lcount<20) {
++                   System.Threading.Thread.Sleep(500);
++                   lcount++;
++                }
++                return newTextureID;
+             }
+             return UUID.Zero;
+         }
+@@ -260,7 +269,7 @@
+             updater.BodyData = data;
+             updater.UpdateTimer = updateTimer;
+             updater.UpdaterID = UUID.Random();
+-            updater.Params = extraParams;
++            updater.Params = extraParams.Trim().ToLower();
+             updater.BlendWithOldTexture = SetBlending;
+             updater.FrontAlpha = AlphaValue;
+             updater.Face = face;
+@@ -426,6 +435,10 @@
+             /// </returns>
+             public UUID UpdatePart(SceneObjectPart part, UUID textureID)
+             {
++                char[] paramDelimiter = {',', ' '};
++                string[] prms = Params.Split(paramDelimiter);
++                if (Array.IndexOf(prms, "noupdatepart")>=0) return UUID.Zero;
++
+                 UUID oldID;
+ 
+                 lock (part)
+diff -Nur OpenSim.orig/Region/ScriptEngine/Shared/Api/Implementation/OSSL_Api.cs OpenSim/Region/ScriptEngine/Shared/Api/Implementation/OSSL_Api.cs
+--- OpenSim.orig/Region/ScriptEngine/Shared/Api/Implementation/OSSL_Api.cs	2014-07-20 15:44:29.000000000 +0900
++++ OpenSim/Region/ScriptEngine/Shared/Api/Implementation/OSSL_Api.cs	2014-07-20 15:44:29.000000000 +0900
+@@ -495,6 +495,97 @@
+             if (terrainModule != null) terrainModule.TaintTerrain();
+         }
+ 
++
++        // Fumi.Iseki
++        public void osTerrainSetByString(string str, double rate)
++        {  
++            CheckThreatLevel(ThreatLevel.High, "osTerrainSetByString");
++
++            m_host.AddScriptLPS(1);
++            if (!World.Permissions.IsAdministrator(m_host.OwnerID)) return;
++
++            int i, j;
++
++            int lnno = (int)(World.Heightmap.Height*rate+1);
++            double[,] hgt = new double[World.Heightmap.Width, lnno];
++            for (i=0; i<World.Heightmap.Width; i++) {
++                for (j=0; j<lnno; j++) {
++                    hgt[i, j] = 0.0;
++                }
++            }
++
++            string[]  buf = str.TrimEnd('\n').Split('\n');
++
++            j = 0;
++            foreach(string rec in buf) {
++                if (j>=lnno) break;
++                i = 0;
++                string line = rec.Trim(' ');
++                foreach(string itm in System.Text.RegularExpressions.Regex.Split(line, " {1,}")) {
++                    if (i>=World.Heightmap.Width) break;
++                    hgt[i, j] = double.Parse(itm);
++                    i++;
++                }
++                j++;
++            }
++
++            for (j=0; j<World.Heightmap.Height; j++) {
++                int jj = World.Heightmap.Height - j - 1;
++                double yy = j*rate;
++                int hh = (int)yy;
++                double al = yy - (double)hh;
++
++                for (i=0; i<World.Heightmap.Width; i++) {
++                    if (World.Permissions.CanTerraformLand(m_host.OwnerID, new Vector3(i, jj, 0))) {
++                        World.Heightmap[i, jj] = (1.0-al)*hgt[i, hh] + al*hgt[i, hh+1];
++                    }
++                }
++            }
++        }
++
++
++        // Fumi.Iseki
++		public LSL_Key osSetTerrainTextureURL(int level, string url)
++        {
++            CheckThreatLevel(ThreatLevel.High, "osSetTerrainTextureURL");
++
++            m_host.AddScriptLPS(1);
++            if (!World.Permissions.IsAdministrator(m_host.OwnerID)) return new LSL_Key(UUID.Zero.ToString());
++
++            if (level<0 || level>3) return new LSL_Key(UUID.Zero.ToString());
++
++            IDynamicTextureManager textureManager = World.RequestModuleInterface<IDynamicTextureManager>();
++            if (textureManager==null) return new LSL_Key(UUID.Zero.ToString());
++            UUID textureID = textureManager.AddDynamicTextureURL(World.RegionInfo.RegionID, m_host.UUID, "image", url, "noUpdatePart", 600);
++
++            //
++            IEstateModule estate = World.RequestModuleInterface<IEstateModule>();
++            if (estate==null) return new LSL_Key(UUID.Zero.ToString());
++            estate.setEstateTerrainBaseTexture(level, textureID);
++
++            return new LSL_Key(textureID.ToString());
++        }
++
++
++        // Fumi.Iseki
++        public void osTerrainFill(double height)
++        {
++            CheckThreatLevel(ThreatLevel.High, "osTerrainFill");
++
++            m_host.AddScriptLPS(1);
++            if (!World.Permissions.IsAdministrator(m_host.OwnerID)) return;
++            //
++            for (int j=0; j<World.Heightmap.Height; j++) {
++                for (int i=0; i<World.Heightmap.Width; i++) {
++                    if (World.Permissions.CanTerraformLand(m_host.OwnerID, new Vector3(i, j, 0)))
++                    {
++                        World.Heightmap[i, j] = height;
++                    }
++                }
++            }
++        }
++
++
+         public int osRegionRestart(double seconds)
+         {
+             // This is High here because region restart is not reliable
+diff -Nur OpenSim.orig/Region/ScriptEngine/Shared/Api/Interface/IOSSL_Api.cs OpenSim/Region/ScriptEngine/Shared/Api/Interface/IOSSL_Api.cs
+--- OpenSim.orig/Region/ScriptEngine/Shared/Api/Interface/IOSSL_Api.cs	2014-07-20 15:44:29.000000000 +0900
++++ OpenSim/Region/ScriptEngine/Shared/Api/Interface/IOSSL_Api.cs	2014-07-20 15:44:29.000000000 +0900
+@@ -134,6 +134,11 @@
+         LSL_Integer osTerrainSetHeight(int x, int y, double val); //Deprecated
+         void osTerrainFlush();
+ 
++        // Fumi.Iseki
++        void osTerrainSetByString(string str, double rate);
++        LSL_Key osSetTerrainTextureURL(int level, string url);
++        void osTerrainFill(double height);
++
+         int osRegionRestart(double seconds);
+         void osRegionNotice(string msg);
+         bool osConsoleCommand(string Command);
+diff -Nur OpenSim.orig/Region/ScriptEngine/Shared/Api/Runtime/OSSL_Stub.cs OpenSim/Region/ScriptEngine/Shared/Api/Runtime/OSSL_Stub.cs
+--- OpenSim.orig/Region/ScriptEngine/Shared/Api/Runtime/OSSL_Stub.cs	2014-07-20 15:44:29.000000000 +0900
++++ OpenSim/Region/ScriptEngine/Shared/Api/Runtime/OSSL_Stub.cs	2014-07-20 15:44:29.000000000 +0900
+@@ -204,6 +204,26 @@
+             m_OSSL_Functions.osTerrainFlush();
+         }
+ 
++
++        // Fumi.Iseki
++        public void osTerrainSetByString(string str, double rate)
++        {
++            m_OSSL_Functions.osTerrainSetByString(str, rate);
++        }
++
++        // Fumi.Iseki
++        public LSL_Key osSetTerrainTextureURL(int level, string url)
++        {
++            return m_OSSL_Functions.osSetTerrainTextureURL(level, url);
++        }
++
++        // Fumi.Iseki
++        public void osTerrainFill(double height)
++        {
++            m_OSSL_Functions.osTerrainFill(height);
++        }
++
++
+         public int osRegionRestart(double seconds)
+         {
+             return m_OSSL_Functions.osRegionRestart(seconds);

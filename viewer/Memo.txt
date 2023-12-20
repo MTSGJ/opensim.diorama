@@ -1,0 +1,46 @@
+SunFixed
+REGION_FLAGS_SUN_FIXED
+
+
+G:\CompileSL\Singularity\SingularityViewer-1.8.5\indra\newview\skins\default\xui\en-us\panel_region_estate.xml
+ 
+
+   <check_box bottom_delta="-18" follows="left|top" height="20" label="Fixed Sun" left_delta="-200" name="fixed_sun_check" width="100" />
+
+
+
+ 
+    <check_box bottom_delta="-13" follows="left|top" height="20" label="Fixed Texture" left_delta="-335" name="fixed_texture_check" width="100" />
+ 
+
+
+
+
+REGION_FLAGS_BLOCK_FLY
+
+
+
+HandleEstateOwnerMessage
+
+OpenSim/Framework/IClientAPI.cs
+SetRegionTerrainSettings()
+
+OpenSim/Region/CoreModules/World/Estate/EstateManagementModule.cs
+setRegionTerrainSettings()
+
+Framework/RegionSettings.cs 
+Save() -> OnSave() -> SaveDelegate()
+
+
+
+
+00000000-ABCD-2673-439F-000000000000
+00000000-0000-2222-3333-100000001001
+
+
+
+LLViewerFetchedTexture <- LLViewerTexture <- LLGLTexture <- LLTexture
+        |                                        |
+        |                                   LLImageGL (*mGLTexturep)
+        | 
+LLImageRaw (*getRawImage()) <- LLImageBase
